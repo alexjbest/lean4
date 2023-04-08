@@ -60,7 +60,7 @@ private partial def mkInjectiveTheoremTypeCore? (ctorVal : ConstructorVal) (useE
           if arg1.occurs resultType then
             mkArgs2 (i + 1) (b.instantiate1 arg1) (args2.push arg1) args2New
           else
-            withLocalDecl n (if useEq then BinderInfo.default else BinderInfo.implicit) d fun arg2 =>
+            withLocalDecl (n.appendAfter "'") (if useEq then BinderInfo.default else BinderInfo.implicit) d fun arg2 =>
               mkArgs2 (i + 1) (b.instantiate1 arg2) (args2.push arg2) (args2New.push arg2)
         | _ => throwError "unexpected constructor type for '{ctorVal.name}'"
       else
