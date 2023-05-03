@@ -41,7 +41,7 @@ Try this: simp only [bla, h]
     | Sum.inr val => 0
 [Meta.Tactic.simp.rewrite] unfold h, h x ==> Sum.inl (x, x)
 [Meta.Tactic.simp.rewrite] @eq_self:1000, x + x = x + x ==> True
-Try this: simp only [h, Nat.sub_add_cancel]
+Try this: simp only [Nat.sub_add_cancel, h]
 [Meta.Tactic.simp.rewrite] h:1000, 1 ≤ x ==> True
 [Meta.Tactic.simp.rewrite] @Nat.sub_add_cancel:1000, x - 1 + 1 ==> x
 [Meta.Tactic.simp.rewrite] @eq_self:1000, x + 2 = x + 2 ==> True
