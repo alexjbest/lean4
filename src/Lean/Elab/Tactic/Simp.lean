@@ -171,7 +171,6 @@ def elabSimpArgs (stx : Syntax) (ctx : Simp.Context) (eraseLocal : Bool) (kind :
           | .expr e  =>
             let fvar ← Term.isLocalIdent? term
             if let some fvar := fvar then
-              -- We use `eraseCore` because the simp theorem for the hypothesis was not added yet
               thms ← addDeclToUnfoldOrTheorem thms (.fvar fvar.fvarId!) e post inv kind
             else
               let name ← mkFreshId

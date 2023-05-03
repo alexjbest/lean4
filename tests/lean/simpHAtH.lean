@@ -1,4 +1,3 @@
-
 axiom q : Nat → Prop
 axiom p : Nat → Prop
 axiom q_eq_p : q = p
