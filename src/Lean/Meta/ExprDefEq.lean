@@ -10,6 +10,27 @@ import Lean.Util.OccursCheck
 namespace Lean.Meta
 
 /--
+  Return `true` if `e` is of the form `fun (x_1 ... x_n) => ?m y_1 ... y_k)`, and `?m` is unassigned.
+  Remark: `n`, `k` may be 0.
+  This function is used to filter unification problems in
+  `isDefEqArgs`/`isDefEqEtaStruct` where we can assign proofs.
+  If one side is of the form described above, then we can likely assign `?m`.
+  But it it's not, we would most likely apply proof irrelevance, which is
+  usually very expensive since it needs to unify the types as well.
+-/
+def isAbstractedUnassignedMVar : Expr → MetaM Bool
+  | .lam _ _ b _ => isAbstractedUnassignedMVar b
+  | .app a _ => isAbstractedUnassignedMVar a
+  | .mvar mvarId => do
+    if (← mvarId.isReadOnlyOrSyntheticOpaque) then
+      pure false
+    else if (← mvarId.isAssigned) then
+      pure false
+    else
+      pure true
+  | _ => pure false
+
+/--
   Return true if `b` is of the form `mk a.1 ... a.n`, and `a` is not a constructor application.
 
   If `a` and `b` are constructor applications, the method returns `false` to force `isDefEq` to use `isDefEqArgs`.
@@ -49,6 +70,13 @@ where
           for i in [ctorVal.numParams : args.size] do
             let j := i - ctorVal.numParams
             let proj ← mkProjFn ctorVal us params j a
+            if ← isProof proj then
+              unless ← isAbstractedUnassignedMVar args[i]! do
+                -- Skip expensive unification problem that is likely solved
+                -- using proof irrelevance.  We already know that `proj` and
+                -- `args[i]!` have the same type, so they're defeq in any case.
+                -- See comment at `isAbstractedUnassignedMVar`.
+                continue
             trace[Meta.isDefEq.eta.struct] "{a} =?= {b} @ [{j}], {proj} =?= {args[i]!}"
             unless (← isDefEq proj args[i]!) do
               trace[Meta.isDefEq.eta.struct] "failed, unexpect arg #{i}, projection{indentExpr proj}\nis not defeq to{indentExpr args[i]!}"
@@ -222,12 +250,26 @@ private def isDefEqArgsFirstPass
       trace[Meta.isDefEq] "found messy {a₁} =?= {a₂}"
       postponedHO := postponedHO.push i
     else if info.isExplicit then
+      if info.isProp then
+        unless ← isAbstractedUnassignedMVar a₁ <||> isAbstractedUnassignedMVar a₂ do
+          -- Skip expensive unification problem that is likely solved
+          -- using proof irrelevance.  We already know that `a₁` and
+          -- `a₂` have the same type, so they're defeq in any case.
+          -- See comment at `isAbstractedUnassignedMVar`.
+          continue
       unless (← Meta.isExprDefEqAux a₁ a₂) do
         return .failed
     else if (← isEtaUnassignedMVar a₁ <||> isEtaUnassignedMVar a₂) then
       unless (← Meta.isExprDefEqAux a₁ a₂) do
         return .failed
     else
+      if info.isProp then
+        unless ← isAbstractedUnassignedMVar a₁ <||> isAbstractedUnassignedMVar a₂ do
+          -- Skip expensive unification problem that is likely solved
+          -- using proof irrelevance.  We already know that `a₁` and
+          -- `a₂` have the same type, so they're defeq in any case.
+          -- See comment at `isAbstractedUnassignedMVar`.
+          continue
       postponedImplicit := postponedImplicit.push i
   return .ok postponedImplicit postponedHO
 
@@ -1729,13 +1771,17 @@ private def isDefEqProjInst (t : Expr) (s : Expr) : MetaM LBool := do
 private def isExprDefEqExpensive (t : Expr) (s : Expr) : MetaM Bool := do
   whenUndefDo (isDefEqEta t s) do
   whenUndefDo (isDefEqEta s t) do
-  -- TODO: investigate whether this is the place for putting this check
-  if (← (isDefEqEtaStruct t s <||> isDefEqEtaStruct s t)) then return true
   if (← isDefEqProj t s) then return true
   whenUndefDo (isDefEqNative t s) do
   whenUndefDo (isDefEqNat t s) do
   whenUndefDo (isDefEqOffset t s) do
   whenUndefDo (isDefEqDelta t s) do
+  -- We try structure eta *after* lazy delta reduction;
+  -- otherwise we would end up applying it at every step of a reduction chain
+  -- as soon as one of the sides is a constructor application,
+  -- which is very costly because it requires us to unify the fields.
+  if (← (isDefEqEtaStruct t s <||> isDefEqEtaStruct s t)) then
+    return true
   if t.isConst && s.isConst then
     if t.constName! == s.constName! then isListLevelDefEqAux t.constLevels! s.constLevels! else return false
   else if (← pure t.isApp <&&> pure s.isApp <&&> isDefEqApp t s) then

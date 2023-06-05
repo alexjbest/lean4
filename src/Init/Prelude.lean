@@ -473,7 +473,7 @@ attribute [unbox] Prod
 
 /--
 Similar to `Prod`, but `α` and `β` can be propositions.
-We use this Type internally to automatically generate the `brecOn` recursor.
+We use this type internally to automatically generate the `brecOn` recursor.
 -/
 structure PProd (α : Sort u) (β : Sort v) where
   /-- The first projection out of a pair. if `p : PProd α β` then `p.1 : α`. -/
@@ -3720,6 +3720,16 @@ abbrev nameLitKind : SyntaxNodeKind := `name
 
 /-- `fieldIdx` is the node kind of projection indices like the `2` in `x.2`. -/
 abbrev fieldIdxKind : SyntaxNodeKind := `fieldIdx
+
+/--
+`hygieneInfo` is the node kind of the `hygieneInfo` parser, which is an
+"invisible token" which captures the hygiene information at the current point
+without parsing anything.
+
+They can be used to generate identifiers (with `Lean.HygieneInfo.mkIdent`)
+as if they were introduced by the calling context, not the called macro.
+-/
+abbrev hygieneInfoKind : SyntaxNodeKind := `hygieneInfo
 
 /--
 `interpolatedStrLitKind` is the node kind of interpolated string literal

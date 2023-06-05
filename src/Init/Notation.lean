@@ -363,7 +363,7 @@ namespace Parser.Tactic
 A case tag argument has the form `tag x₁ ... xₙ`; it refers to tag `tag` and renames
 the last `n` hypotheses to `x₁ ... xₙ`.
 -/
-syntax caseArg := binderIdent binderIdent*
+syntax caseArg := binderIdent (ppSpace binderIdent)*
 
 end Parser.Tactic
 end Lean
@@ -479,7 +479,7 @@ The syntax `%[a,b,c|tail]` constructs a value equivalent to `a::b::c::tail`.
 It uses binary partitioning to construct a tree of intermediate let bindings as in
 `let left := [d, e, f]; a :: b :: c :: left` to avoid creating very deep expressions.
 -/
-syntax "%[" withoutPosition(term,* "|" term) "]" : term
+syntax "%[" withoutPosition(term,* " | " term) "]" : term
 
 namespace Lean
 
@@ -495,12 +495,6 @@ macro_rules
       expandListLit elems.elemsAndSeps.size false (← ``(List.nil))
     else
       `(%[ $elems,* | List.nil ])
-
--- Declare `this` as a keyword that unhygienically binds to a scope-less `this` assumption (or other binding).
--- The keyword prevents declaring a `this` binding except through metaprogramming, as is done by `have`/`show`.
-/-- Special identifier introduced by "anonymous" `have : ...`, `suffices p ...` etc. -/
-macro tk:"this" : term =>
-  return (⟨(Syntax.ident tk.getHeadInfo "this".toSubstring `this [])⟩ : TSyntax `term)
 
 /--
 Category for carrying raw syntax trees between macros; any content is printed as is by the pretty printer.
@@ -521,11 +515,11 @@ existing code. It may be removed in a future version of the library.
 
 `@[deprecated myBetterDef]` means that `myBetterDef` is the suggested replacement.
 -/
-syntax (name := deprecated) "deprecated " (ident)? : attr
+syntax (name := deprecated) "deprecated" (ppSpace ident)? : attr
 
 /--
 When `parent_dir` contains the current Lean file, `include_str "path" / "to" / "file"` becomes
 a string literal with the contents of the file at `"parent_dir" / "path" / "to" / "file"`. If this
 file cannot be read, elaboration fails.
 -/
-syntax (name := includeStr) "include_str" term : term
+syntax (name := includeStr) "include_str " term : term

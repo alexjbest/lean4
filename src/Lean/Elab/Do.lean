@@ -49,7 +49,7 @@ private def letDeclArgHasBinders (letDeclArg : Syntax) : Bool :=
   else if k == ``Parser.Term.letEqnsDecl then
     true
   else if k == ``Parser.Term.letIdDecl then
-    -- letIdLhs := ident >> checkWsBefore "expected space before binders" >> many (ppSpace >> letIdBinder)) >> optType
+    -- letIdLhs := binderIdent >> checkWsBefore "expected space before binders" >> many (ppSpace >> letIdBinder)) >> optType
     let binders := letDeclArg[1]
     binders.getNumArgs > 0
   else
@@ -584,8 +584,11 @@ def concat (terminal : CodeBlock) (kRef : Syntax) (y? : Option Var) (k : CodeBlo
   let terminal ← liftMacroM <| convertTerminalActionIntoJmp terminal.code jp xs
   return { code  := attachJP jpDecl terminal, uvars := k.uvars }
 
-def getLetIdDeclVar (letIdDecl : Syntax) : Var :=
-  letIdDecl[0]
+def getLetIdDeclVars (letIdDecl : Syntax) : Array Var :=
+  if letIdDecl[0].isIdent then
+    #[letIdDecl[0]]
+  else
+    #[]
 
 -- support both regular and syntax match
 def getPatternVarsEx (pattern : Syntax) : TermElabM (Array Var) :=
@@ -600,17 +603,20 @@ def getLetPatDeclVars (letPatDecl : Syntax) : TermElabM (Array Var) := do
   let pattern := letPatDecl[0]
   getPatternVarsEx pattern
 
-def getLetEqnsDeclVar (letEqnsDecl : Syntax) : Var :=
-  letEqnsDecl[0]
+def getLetEqnsDeclVars (letEqnsDecl : Syntax) : Array Var :=
+  if letEqnsDecl[0].isIdent then
+    #[letEqnsDecl[0]]
+  else
+    #[]
 
 def getLetDeclVars (letDecl : Syntax) : TermElabM (Array Var) := do
   let arg := letDecl[0]
   if arg.getKind == ``Parser.Term.letIdDecl then
-    return #[getLetIdDeclVar arg]
+    return getLetIdDeclVars arg
   else if arg.getKind == ``Parser.Term.letPatDecl then
     getLetPatDeclVars arg
   else if arg.getKind == ``Parser.Term.letEqnsDecl then
-    return #[getLetEqnsDeclVar arg]
+    return getLetEqnsDeclVars arg
   else
     throwError "unexpected kind of let declaration"
 
@@ -618,11 +624,11 @@ def getDoLetVars (doLet : Syntax) : TermElabM (Array Var) :=
   -- leading_parser "let " >> optional "mut " >> letDecl
   getLetDeclVars doLet[2]
 
-def getHaveIdLhsVar (optIdent : Syntax) : TermElabM Var :=
-  if optIdent.isNone then
-    `(this)
+def getHaveIdLhsVar (optIdent : Syntax) : Var :=
+  if optIdent.getKind == hygieneInfoKind then
+    HygieneInfo.mkIdent optIdent[0] `this
   else
-    pure optIdent[0]
+    optIdent
 
 def getDoHaveVars (doHave : Syntax) : TermElabM (Array Var) := do
   -- doHave := leading_parser "have " >> Term.haveDecl
@@ -630,13 +636,13 @@ def getDoHaveVars (doHave : Syntax) : TermElabM (Array Var) := do
   let arg := doHave[1][0]
   if arg.getKind == ``Parser.Term.haveIdDecl then
     -- haveIdDecl := leading_parser atomic (haveIdLhs >> " := ") >> termParser
-    -- haveIdLhs := optional (ident >> many (ppSpace >> letIdBinder)) >> optType
-    return #[← getHaveIdLhsVar arg[0]]
+    -- haveIdLhs := (binderIdent <|> hygieneInfo) >> many letIdBinder >> optType
+    return #[getHaveIdLhsVar arg[0]]
   else if arg.getKind == ``Parser.Term.letPatDecl then
     getLetPatDeclVars arg
   else if arg.getKind == ``Parser.Term.haveEqnsDecl then
     -- haveEqnsDecl := leading_parser haveIdLhs >> matchAlts
-    return #[← getHaveIdLhsVar arg[0]]
+    return #[getHaveIdLhsVar arg[0]]
   else
     throwError "unexpected kind of have declaration"
 
@@ -672,7 +678,7 @@ def getDoLetArrowVars (doLetArrow : Syntax) : TermElabM (Array Var) := do
 def getDoReassignVars (doReassign : Syntax) : TermElabM (Array Var) := do
   let arg := doReassign[0]
   if arg.getKind == ``Parser.Term.letIdDecl then
-    return #[getLetIdDeclVar arg]
+    return getLetIdDeclVars arg
   else if arg.getKind == ``Parser.Term.letPatDecl then
     getLetPatDeclVars arg
   else

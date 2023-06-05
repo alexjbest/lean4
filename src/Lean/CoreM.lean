@@ -19,6 +19,8 @@ register_builtin_option maxHeartbeats : Nat := {
   descr := "maximum amount of heartbeats per command. A heartbeat is number of (small) memory allocations (in thousands), 0 means no limit"
 }
 
+builtin_initialize registerTraceClass `Kernel
+
 def getMaxHeartbeats (opts : Options) : Nat :=
   maxHeartbeats.get opts * 1000
 
@@ -270,12 +272,14 @@ def Exception.isMaxHeartbeat (ex : Exception) : Bool :=
 def mkArrow (d b : Expr) : CoreM Expr :=
   return Lean.mkForall (← mkFreshUserName `x) BinderInfo.default d b
 
-def addDecl (decl : Declaration) : CoreM Unit := do profileitM Exception "type checking" (← getOptions) do
-  if !(← MonadLog.hasErrors) && decl.hasSorry then
-    logWarning "declaration uses 'sorry'"
-  match (← getEnv).addDecl decl with
-  | Except.ok    env => setEnv env
-  | Except.error ex  => throwKernelException ex
+def addDecl (decl : Declaration) : CoreM Unit := do
+  profileitM Exception "type checking" (← getOptions) do
+    withTraceNode `Kernel (fun _ => return m!"typechecking declaration") do
+      if !(← MonadLog.hasErrors) && decl.hasSorry then
+        logWarning "declaration uses 'sorry'"
+      match (← getEnv).addDecl decl with
+      | Except.ok    env => setEnv env
+      | Except.error ex  => throwKernelException ex
 
 private def supportedRecursors :=
   #[``Empty.rec, ``False.rec, ``Eq.ndrec, ``Eq.rec, ``Eq.recOn, ``Eq.casesOn, ``False.casesOn, ``Empty.casesOn, ``And.rec, ``And.casesOn]
@@ -294,13 +298,21 @@ private def checkUnsupported [Monad m] [MonadEnv m] [MonadError m] (decl : Decla
     | some (Expr.const declName ..) => throwError "code generator does not support recursor '{declName}' yet, consider using 'match ... with' and/or structural recursion"
     | _ => pure ()
 
+register_builtin_option compiler.enableNew : Bool := {
+  defValue := true
+  group    := "compiler"
+  descr    := "(compiler) enable the new code generator, this should have no significant effect on your code but it does help to test the new code generator; unset to only use the old code generator instead"
+}
+
 -- Forward declaration
 @[extern "lean_lcnf_compile_decls"]
 opaque compileDeclsNew (declNames : List Name) : CoreM Unit
 
 def compileDecl (decl : Declaration) : CoreM Unit := do
-  compileDeclsNew (Compiler.getDeclNamesForCodeGen decl)
-  match (← getEnv).compileDecl (← getOptions) decl with
+  let opts ← getOptions
+  if compiler.enableNew.get opts then
+    compileDeclsNew (Compiler.getDeclNamesForCodeGen decl)
+  match (← getEnv).compileDecl opts decl with
   | Except.ok env   => setEnv env
   | Except.error (KernelException.other msg) =>
     checkUnsupported decl -- Generate nicer error message for unsupported recursors and axioms
@@ -309,8 +321,10 @@ def compileDecl (decl : Declaration) : CoreM Unit := do
     throwKernelException ex
 
 def compileDecls (decls : List Name) : CoreM Unit := do
-  compileDeclsNew decls
-  match (← getEnv).compileDecls (← getOptions) decls with
+  let opts ← getOptions
+  if compiler.enableNew.get opts then
+    compileDeclsNew decls
+  match (← getEnv).compileDecls opts decls with
   | Except.ok env   => setEnv env
   | Except.error (KernelException.other msg) =>
     throwError msg

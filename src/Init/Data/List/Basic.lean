@@ -285,7 +285,7 @@ def dropWhile (p : α → Bool) : List α → List α
   | []   => []
   | a::l => match p a with
     | true  => dropWhile p l
-    | false =>  a::l
+    | false => a::l
 
 /--
 `O(|l|)`. `find? p l` returns the first element for which `p` returns true,
@@ -524,7 +524,7 @@ def takeWhile (p : α → Bool) : (xs : List α) → List α
 
 /--
 `O(|l|)`. Returns true if `p` is true for every element of `l`.
-* `any p [a, b, c] = p a && p b && p c`
+* `all p [a, b, c] = p a && p b && p c`
 -/
 @[inline] def all (l : List α) (p : α → Bool) : Bool :=
   foldr (fun a r => p a && r) true l

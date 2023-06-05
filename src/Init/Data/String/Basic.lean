@@ -44,7 +44,7 @@ def append : String → (@& String) → String
 def toList (s : String) : List Char :=
   s.data
 
-private def utf8GetAux : List Char → Pos → Pos → Char
+def utf8GetAux : List Char → Pos → Pos → Char
   | [],    _, _ => default
   | c::cs, i, p => if i = p then c else utf8GetAux cs (i + c) p
 
@@ -58,9 +58,9 @@ def get (s : @& String) (p : @& Pos) : Char :=
   match s with
   | ⟨s⟩ => utf8GetAux s 0 p
 
-private def utf8GetAux? : List Char → Pos → Pos → Option Char
+def utf8GetAux? : List Char → Pos → Pos → Option Char
   | [],    _, _ => none
-  | c::cs, i, p => if i = p then c else utf8GetAux cs (i + c) p
+  | c::cs, i, p => if i = p then c else utf8GetAux? cs (i + c) p
 
 @[extern "lean_string_utf8_get_opt"]
 def get? : (@& String) → (@& Pos) → Option Char
@@ -74,7 +74,7 @@ def get! (s : @& String) (p : @& Pos) : Char :=
   match s with
   | ⟨s⟩ => utf8GetAux s 0 p
 
-private def utf8SetAux (c' : Char) : List Char → Pos → Pos → List Char
+def utf8SetAux (c' : Char) : List Char → Pos → Pos → List Char
   | [],    _, _ => []
   | c::cs, i, p =>
     if i = p then (c'::cs) else c::(utf8SetAux c' cs (i + c) p)
@@ -91,7 +91,7 @@ def next (s : @& String) (p : @& Pos) : Pos :=
   let c := get s p
   p + c
 
-private def utf8PrevAux : List Char → Pos → Pos → Pos
+def utf8PrevAux : List Char → Pos → Pos → Pos
   | [],    _, _ => 0
   | c::cs, i, p =>
     let i' := i + c
@@ -119,6 +119,9 @@ def get' (s : @& String) (p : @& Pos) (h : ¬ s.atEnd p) : Char :=
   match s with
   | ⟨s⟩ => utf8GetAux s 0 p
 
+/--
+Similar to `next` but runtime does not perform bounds check.
+-/
 @[extern "lean_string_utf8_next_fast"]
 def next' (s : @& String) (p : @& Pos) (h : ¬ s.atEnd p) : Pos :=
   let c := get s p
