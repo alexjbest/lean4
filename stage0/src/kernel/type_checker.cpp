@@ -29,6 +29,7 @@ static expr * g_nat_succ     = nullptr;
 static expr * g_nat_add      = nullptr;
 static expr * g_nat_sub      = nullptr;
 static expr * g_nat_mul      = nullptr;
+static expr * g_nat_pow      = nullptr;
 static expr * g_nat_mod      = nullptr;
 static expr * g_nat_div      = nullptr;
 static expr * g_nat_beq      = nullptr;
@@ -408,7 +409,7 @@ static bool is_let_fvar(local_ctx const & lctx, expr const & e) {
     If `cheap == true`, then we don't perform delta-reduction when reducing major premise of recursors and projections.
     We also do not cache results. */
 expr type_checker::whnf_core(expr const & e, bool cheap_rec, bool cheap_proj) {
-    check_system("whnf");
+    check_system("type checker: whnf");
 
     // handle easy cases
     switch (e.kind()) {
@@ -601,6 +602,7 @@ optional<expr> type_checker::reduce_nat(expr const & e) {
         if (f == *g_nat_add) return reduce_bin_nat_op(nat_add, e);
         if (f == *g_nat_sub) return reduce_bin_nat_op(nat_sub, e);
         if (f == *g_nat_mul) return reduce_bin_nat_op(nat_mul, e);
+        if (f == *g_nat_pow) return reduce_bin_nat_op(nat_pow, e);
         if (f == *g_nat_mod) return reduce_bin_nat_op(nat_mod, e);
         if (f == *g_nat_div) return reduce_bin_nat_op(nat_div, e);
         if (f == *g_nat_beq) return reduce_bin_nat_pred(nat_eq, e);
@@ -1146,6 +1148,8 @@ void initialize_type_checker() {
     mark_persistent(g_nat_sub->raw());
     g_nat_mul      = new expr(mk_constant(name{"Nat", "mul"}));
     mark_persistent(g_nat_mul->raw());
+    g_nat_pow      = new expr(mk_constant(name{"Nat", "pow"}));
+    mark_persistent(g_nat_pow->raw());
     g_nat_div      = new expr(mk_constant(name{"Nat", "div"}));
     mark_persistent(g_nat_div->raw());
     g_nat_mod      = new expr(mk_constant(name{"Nat", "mod"}));
@@ -1171,6 +1175,7 @@ void finalize_type_checker() {
     delete g_nat_add;
     delete g_nat_sub;
     delete g_nat_mul;
+    delete g_nat_pow;
     delete g_nat_div;
     delete g_nat_mod;
     delete g_nat_beq;

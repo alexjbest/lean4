@@ -60,7 +60,7 @@ def bar ⦃x : Nat⦄ : Nat := x
 #check bar -- bar : ⦃x : Nat⦄ → Nat
 ```
 
-See also the Lean manual: https://leanprover.github.io/lean4/doc/expressions.html#implicit-arguments
+See also the Lean manual: https://lean-lang.org/lean4/doc/expressions.html#implicit-arguments
 -/
 inductive BinderInfo where
   /-- Default binder annotation, e.g. `(x : α)` -/
@@ -152,7 +152,9 @@ def Expr.Data.hasLevelMVar (c : Expr.Data) : Bool :=
 def Expr.Data.hasLevelParam (c : Expr.Data) : Bool :=
   ((c.shiftRight 43).land 1) == 1
 
-@[extern c inline "(uint64_t)#1"]
+-- NOTE: the `extern` clause of `BinderInfo.toUInt64` is ABI sensitive.
+-- It exploits the fact that a small enum compiles to `uint8`.
+@[extern "lean_uint8_to_uint64"]
 def BinderInfo.toUInt64 : BinderInfo → UInt64
   | .default        => 0
   | .implicit       => 1
@@ -459,7 +461,7 @@ inductive Expr where
   -/
   | proj (typeName : Name) (idx : Nat) (struct : Expr)
 with
-  @[computed_field, extern c inline "lean_ctor_get_uint64(#1, lean_ctor_num_objs(#1)*sizeof(void*))"]
+  @[computed_field, extern "lean_expr_data"]
   data : @& Expr → Data
     | .const n lvls => mkData (mixHash 5 <| mixHash (hash n) (hash lvls)) 0 0 false false (lvls.any Level.hasMVar) (lvls.any Level.hasParam)
     | .bvar idx => mkData (mixHash 7 <| hash idx) (idx+1)

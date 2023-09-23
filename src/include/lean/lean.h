@@ -296,9 +296,9 @@ LEAN_SHARED void lean_set_panic_messages(bool flag);
 LEAN_SHARED lean_object * lean_panic_fn(lean_object * default_val, lean_object * msg);
 
 LEAN_SHARED __attribute__((noreturn)) void lean_internal_panic(char const * msg);
-LEAN_SHARED __attribute__((noreturn)) void lean_internal_panic_out_of_memory();
-LEAN_SHARED __attribute__((noreturn)) void lean_internal_panic_unreachable();
-LEAN_SHARED __attribute__((noreturn)) void lean_internal_panic_rc_overflow();
+LEAN_SHARED __attribute__((noreturn)) void lean_internal_panic_out_of_memory(void);
+LEAN_SHARED __attribute__((noreturn)) void lean_internal_panic_unreachable(void);
+LEAN_SHARED __attribute__((noreturn)) void lean_internal_panic_rc_overflow(void);
 
 static inline size_t lean_align(size_t v, size_t a) {
     return (v / a)*a + a * (v % a != 0);
@@ -313,7 +313,7 @@ static inline unsigned lean_get_slot_idx(unsigned sz) {
 LEAN_SHARED void * lean_alloc_small(unsigned sz, unsigned slot_idx);
 LEAN_SHARED void lean_free_small(void * p);
 LEAN_SHARED unsigned lean_small_mem_size(void * p);
-LEAN_SHARED void lean_inc_heartbeat();
+LEAN_SHARED void lean_inc_heartbeat(void);
 
 #ifndef __cplusplus
 void * malloc(size_t);  // avoid including big `stdlib.h`
@@ -1014,6 +1014,11 @@ static inline uint32_t lean_string_utf8_get_fast(b_lean_obj_arg s, b_lean_obj_ar
   if ((c & 0x80) == 0) return c;
   return lean_string_utf8_get_fast_cold(str, idx, lean_string_size(s), c);
 }
+static inline uint8_t lean_string_get_byte_fast(b_lean_obj_arg s, b_lean_obj_arg i) {
+  char const * str = lean_string_cstr(s);
+  size_t idx = lean_unbox(i);
+  return str[idx];
+}
 
 LEAN_SHARED lean_obj_res lean_string_utf8_next(b_lean_obj_arg s, b_lean_obj_arg i);
 LEAN_SHARED lean_obj_res lean_string_utf8_next_fast_cold(size_t i, unsigned char c);
@@ -1078,9 +1083,9 @@ static inline lean_obj_res lean_thunk_get_own(b_lean_obj_arg t) {
 
 /* Tasks */
 
-LEAN_SHARED void lean_init_task_manager();
+LEAN_SHARED void lean_init_task_manager(void);
 LEAN_SHARED void lean_init_task_manager_using(unsigned num_workers);
-LEAN_SHARED void lean_finalize_task_manager();
+LEAN_SHARED void lean_finalize_task_manager(void);
 
 LEAN_SHARED lean_obj_res lean_task_spawn_core(lean_obj_arg c, unsigned prio, bool keep_alive);
 /* Run a closure `Unit -> A` as a `Task A` */
@@ -1103,7 +1108,7 @@ static inline lean_obj_res lean_task_get_own(lean_obj_arg t) {
 }
 
 /* primitive for implementing `IO.checkCanceled : IO Bool` */
-LEAN_SHARED bool lean_io_check_canceled_core();
+LEAN_SHARED bool lean_io_check_canceled_core(void);
 /* primitive for implementing `IO.cancel : Task a -> IO Unit` */
 LEAN_SHARED void lean_io_cancel_core(b_lean_obj_arg t);
 /* primitive for implementing `IO.hasFinished : Task a -> IO Unit` */
@@ -1827,7 +1832,7 @@ static inline bool lean_io_result_is_error(b_lean_obj_arg r) { return lean_ptr_t
 static inline b_lean_obj_res lean_io_result_get_value(b_lean_obj_arg r) { assert(lean_io_result_is_ok(r)); return lean_ctor_get(r, 0); }
 static inline b_lean_obj_res lean_io_result_get_error(b_lean_obj_arg r) { assert(lean_io_result_is_error(r)); return lean_ctor_get(r, 0); }
 LEAN_SHARED void lean_io_result_show_error(b_lean_obj_arg r);
-LEAN_SHARED void lean_io_mark_end_initialization();
+LEAN_SHARED void lean_io_mark_end_initialization(void);
 static inline lean_obj_res lean_io_result_mk_ok(lean_obj_arg a) {
     lean_object * r = lean_alloc_ctor(0, 2, 0);
     lean_ctor_set(r, 0, a);
@@ -1923,8 +1928,75 @@ static inline uint8_t lean_float_decLt(double a, double b) { return a < b; }
 static inline double lean_uint64_to_float(uint64_t a) { return (double) a; }
 
 /* Efficient C implementations of defns used by the compiler */
-static inline size_t lean_data_hashmap_mk_idx(lean_object* sz, uint64_t hash) {
+static inline size_t lean_hashmap_mk_idx(lean_obj_arg sz, uint64_t hash) {
     return (size_t)(hash & (lean_unbox(sz) - 1));
+}
+
+static inline size_t lean_hashset_mk_idx(lean_obj_arg sz, uint64_t hash) {
+    return (size_t)(hash & (lean_unbox(sz) - 1));
+}
+
+static inline uint64_t lean_expr_data(lean_obj_arg expr) {
+    return lean_ctor_get_uint64(expr, lean_ctor_num_objs(expr)*sizeof(void*));
+}
+
+// eliding unused parameter names is C23+, so ignore warning instead in the following
+#if defined(__clang__)
+#pragma clang diagnostic ignored "-Wunused-parameter"
+#elif defined(__GNUC__) && !defined(__CLANG__)
+#pragma GCC diagnostic ignored "-Wunused-parameter"
+#endif
+
+static inline lean_obj_res lean_get_max_ctor_fields(lean_obj_arg _unit) {
+    return lean_box(LEAN_MAX_CTOR_FIELDS);
+}
+
+static inline lean_obj_res lean_get_max_ctor_scalars_size(lean_obj_arg _unit) {
+    return lean_box(LEAN_MAX_CTOR_SCALARS_SIZE);
+}
+
+static inline lean_obj_res lean_get_usize_size(lean_obj_arg _unit) {
+    return lean_box(sizeof(size_t));
+}
+
+static inline lean_obj_res lean_get_max_ctor_tag(lean_obj_arg _unit) {
+    return lean_box(LeanMaxCtorTag);
+}
+
+static inline uint8_t lean_strict_or(uint8_t b1, uint8_t b2) {
+    return b1 || b2;
+}
+
+static inline uint8_t lean_strict_and(uint8_t b1, uint8_t b2) {
+    return b1 && b2;
+}
+
+static inline lean_obj_res lean_version_get_major(lean_obj_arg _unit) {
+    return lean_box(LEAN_VERSION_MAJOR);
+}
+
+static inline lean_obj_res lean_version_get_minor(lean_obj_arg _unit) {
+    return lean_box(LEAN_VERSION_MINOR);
+}
+
+static inline lean_obj_res lean_version_get_patch(lean_obj_arg _unit) {
+    return lean_box(LEAN_VERSION_PATCH);
+}
+
+static inline uint8_t lean_version_get_is_release(lean_obj_arg _unit) {
+    return LEAN_VERSION_IS_RELEASE;
+}
+
+static inline lean_obj_res lean_version_get_special_desc(lean_obj_arg _unit) {
+    return lean_mk_string(LEAN_SPECIAL_VERSION_DESC);
+}
+
+static inline uint8_t lean_internal_is_stage0(lean_obj_arg _unit) {
+    return LEAN_IS_STAGE0;
+}
+
+static inline lean_obj_res lean_nat_pred(b_lean_obj_arg n) {
+    return lean_nat_sub(n, lean_box(1));
 }
 
 #ifdef __cplusplus

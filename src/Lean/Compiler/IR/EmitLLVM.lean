@@ -27,6 +27,27 @@ namespace LLVM
 -- TODO(bollu): instantiate target triple and find out what size_t is.
 def size_tType (llvmctx : LLVM.Context) : IO (LLVM.LLVMType llvmctx) :=
   LLVM.i64Type llvmctx
+
+-- Helper to add a function if it does not exist, and to return the function handle if it does.
+def getOrAddFunction (m : LLVM.Module ctx) (name : String) (type : LLVM.LLVMType ctx) : BaseIO (LLVM.Value ctx) :=  do
+  match (← LLVM.getNamedFunction m name) with
+  | some fn => return fn
+  | none =>
+    /-
+    By the evidence shown in: https://github.com/leanprover/lean4/issues/2373#issuecomment-1658743284
+    this is how clang implements `-fstack-clash-protection` in the LLVM IR, we want this feature
+    for robust stack overflow detection.
+    -/
+    let fn ← LLVM.addFunction m name type
+    let attr ← LLVM.createStringAttribute "probe-stack" "inline-asm"
+    LLVM.addAttributeAtIndex fn LLVM.AttributeIndex.AttributeFunctionIndex attr
+    return fn
+
+def getOrAddGlobal (m : LLVM.Module ctx) (name : String) (type : LLVM.LLVMType ctx) : BaseIO (LLVM.Value ctx) :=  do
+  match (← LLVM.getNamedGlobal m name) with
+  | .some fn => return fn
+  | .none => LLVM.addGlobal m name type
+
 end LLVM
 
 namespace EmitLLVM
@@ -111,11 +132,11 @@ instance : ToString RefcountKind where
 def callLeanRefcountFn (builder : LLVM.Builder llvmctx)
     (kind : RefcountKind) (checkRef? : Bool) (arg : LLVM.Value llvmctx)
     (delta : Option (LLVM.Value llvmctx) := Option.none) : M llvmctx Unit := do
-  let fnName :=  s!"lean_{kind}{if checkRef? then "" else "_ref"}{if delta.isNone then "" else "_n"}" 
+  let fnName :=  s!"lean_{kind}{if checkRef? then "" else "_ref"}{if delta.isNone then "" else "_n"}"
   let retty ← LLVM.voidType llvmctx
   let argtys := if delta.isNone then #[← LLVM.voidPtrType llvmctx] else #[← LLVM.voidPtrType llvmctx, ← LLVM.size_tType llvmctx]
   let fn ← getOrCreateFunctionPrototype (← getLLVMModule) retty fnName argtys
-  let fnty ← LLVM.functionType retty argtys 
+  let fnty ← LLVM.functionType retty argtys
   match delta with
   | .none => do
     -- since refcount δ is 1, we only supply the pointer.
@@ -415,24 +436,38 @@ def emitFnDeclAux (mod : LLVM.Module llvmctx)
   let env ← getEnv
   -- bollu: if we have a declaration with no parameters, then we emit it as a global pointer.
   -- bollu: Otherwise, we emit it as a function
+  let global ←
+    if ps.isEmpty then
+        let retty ← (toLLVMType decl.resultType)
+        let global ← LLVM.getOrAddGlobal mod cppBaseName retty
+        if !isExternal then
+          LLVM.setInitializer global (← LLVM.getUndef retty)
+        pure global
+    else
+        let retty ← (toLLVMType decl.resultType)
+        let mut argtys := #[]
+        for p in ps do
+          -- if it is extern, then we must not add irrelevant args
+          if !(isExternC env decl.name) || !p.ty.isIrrelevant then
+            argtys := argtys.push (← toLLVMType p.ty)
+        -- TODO (bollu): simplify this API, this code of `closureMaxArgs` is duplicated in multiple places.
+        if argtys.size > closureMaxArgs && isBoxedName decl.name then
+          argtys := #[← LLVM.pointerType (← LLVM.voidPtrType llvmctx)]
+        let fnty ← LLVM.functionType retty argtys (isVarArg := false)
+        LLVM.getOrAddFunction mod cppBaseName fnty
+  -- we must now set symbol visibility for global.
   if ps.isEmpty then
-      let retty ← (toLLVMType decl.resultType)
-      let global ← LLVM.getOrAddGlobal mod cppBaseName retty
-      if !isExternal then
-        LLVM.setInitializer global (← LLVM.getUndef retty)
-      return global
-  else
-      let retty ← (toLLVMType decl.resultType)
-      let mut argtys := #[]
-      for p in ps do
-        -- if it is extern, then we must not add irrelevant args
-        if !(isExternC env decl.name) || !p.ty.isIrrelevant then
-          argtys := argtys.push (← toLLVMType p.ty)
-      -- TODO (bollu): simplify this API, this code of `closureMaxArgs` is duplicated in multiple places.
-      if argtys.size > closureMaxArgs && isBoxedName decl.name then
-        argtys := #[← LLVM.pointerType (← LLVM.voidPtrType llvmctx)]
-      let fnty ← LLVM.functionType retty argtys (isVarArg := false)
-      LLVM.getOrAddFunction mod cppBaseName fnty
+    if isClosedTermName env decl.name then LLVM.setVisibility global LLVM.Visibility.hidden -- static
+    else if isExternal then pure () -- extern (Recall that C/LLVM funcs are extern linkage by default.)
+    else LLVM.setDLLStorageClass global LLVM.DLLStorageClass.export  -- LEAN_EXPORT
+  else if !isExternal
+    -- An extern decl might be linked in from a different translation unit.
+    -- Thus, we cannot export an external declaration as we do not define it,
+    -- only declare its presence.
+    -- So, we only export non-external definitions.
+    then LLVM.setDLLStorageClass global LLVM.DLLStorageClass.export
+  return global
+
 
 def emitFnDecl (decl : Decl) (isExternal : Bool) : M llvmctx Unit := do
   let cppBaseName ← toCName decl.name
@@ -1105,12 +1140,12 @@ def emitFnArgs (builder : LLVM.Builder llvmctx)
           let llvmty ← toLLVMType param.ty
           -- pv := *(argsi) = *(args + i)
           let pv ← LLVM.buildLoad2 builder llvmty argsi
-          -- slot for arg[i] which is always void* ? 
+          -- slot for arg[i] which is always void* ?
           let alloca ← LLVM.buildAlloca builder llvmty s!"arg_{i}"
           LLVM.buildStore builder pv alloca
           addVartoState params[i]!.x alloca llvmty
   else
-      let n := LLVM.countParams llvmfn
+      let n ← LLVM.countParams llvmfn
       for i in (List.range n.toNat) do
         let llvmty ← toLLVMType params[i]!.ty
         let alloca ← LLVM.buildAlloca builder  llvmty s!"arg_{i}"
@@ -1137,6 +1172,14 @@ def emitDeclAux (mod : LLVM.Module llvmctx) (builder : LLVM.Builder llvmctx) (d 
           argtys := argtys.push (← toLLVMType x.ty)
       let fnty ← LLVM.functionType retty argtys (isVarArg := false)
       let llvmfn ← LLVM.getOrAddFunction mod name fnty
+      -- set linkage and visibility
+      -- TODO: consider refactoring these into a separate concept (e.g. 'setLinkageAndVisibility')
+      --       Find the spots where this refactor needs to happen by grepping for 'LEAN_EXPORT'
+      --       in the C backend
+      if xs.size == 0 then
+        LLVM.setVisibility llvmfn LLVM.Visibility.hidden -- "static "
+      else
+        LLVM.setDLLStorageClass llvmfn LLVM.DLLStorageClass.export  -- LEAN_EXPORT: make symbol visible to the interpreter
       withReader (fun llvmctx => { llvmctx with mainFn := f, mainParams := xs }) do
         set { var2val := default, jp2bb := default : EmitLLVM.State llvmctx } -- flush variable map
         let bb ← LLVM.appendBasicBlockInContext llvmctx llvmfn "entry"
@@ -1159,7 +1202,7 @@ def emitFns (mod : LLVM.Module llvmctx) (builder : LLVM.Builder llvmctx) : M llv
   let decls := getDecls env
   decls.reverse.forM (emitDecl mod builder)
 
-def callIODeclInitFn (builder : LLVM.Builder llvmctx) 
+def callIODeclInitFn (builder : LLVM.Builder llvmctx)
     (initFnName : String)
     (world : LLVM.Value llvmctx): M llvmctx (LLVM.Value llvmctx) := do
   let retty ← LLVM.voidPtrType llvmctx
@@ -1181,7 +1224,7 @@ def emitDeclInit (builder : LLVM.Builder llvmctx)
   let env ← getEnv
   if isIOUnitInitFn env d.name then do
     let world ← callLeanIOMkWorld builder
-    let resv ← callIODeclInitFn builder (← toCName d.name) world 
+    let resv ← callIODeclInitFn builder (← toCName d.name) world
     let err? ← callLeanIOResultIsError builder resv "is_error"
     buildIfThen_ builder s!"init_{d.name}_isError" err?
       (fun builder => do
@@ -1200,7 +1243,7 @@ def emitDeclInit (builder : LLVM.Builder llvmctx)
       if checkBuiltin? then
         -- `builtin` is set to true if the initializer is part of the executable,
         -- and not loaded dynamically.
-        let builtinParam ← LLVM.getParam parentFn 0 
+        let builtinParam ← LLVM.getParam parentFn 0
         let cond ← buildLeanBoolTrue? builder builtinParam "is_builtin_true"
         let _ ← LLVM.buildCondBr builder cond initBB restBB
        else
@@ -1223,7 +1266,7 @@ def emitDeclInit (builder : LLVM.Builder llvmctx)
          callLeanMarkPersistentFn builder dval
       let _ ← LLVM.buildBr builder restBB
       LLVM.positionBuilderAtEnd builder restBB
-    | none => do 
+    | none => do
       let llvmty ← toLLVMType d.resultType
       let dslot ←  LLVM.getOrAddGlobal (← getLLVMModule) (← toCName d.name) llvmty
       LLVM.setInitializer dslot (← LLVM.getUndef llvmty)
@@ -1247,10 +1290,12 @@ def emitInitFn (mod : LLVM.Module llvmctx) (builder : LLVM.Builder llvmctx) : M 
 
   let initFnTy ← LLVM.functionType (← LLVM.voidPtrType llvmctx) #[ (← LLVM.i8Type llvmctx), (← LLVM.voidPtrType llvmctx)] (isVarArg := false)
   let initFn ← LLVM.getOrAddFunction mod (mkModuleInitializationFunctionName modName) initFnTy
+  LLVM.setDLLStorageClass initFn LLVM.DLLStorageClass.export  -- LEAN_EXPORT
   let entryBB ← LLVM.appendBasicBlockInContext llvmctx initFn "entry"
   LLVM.positionBuilderAtEnd builder entryBB
   let ginit?ty := ← LLVM.i1Type llvmctx
   let ginit?slot ← LLVM.getOrAddGlobal mod (modName.mangle ++ "_G_initialized") ginit?ty
+  LLVM.setVisibility ginit?slot LLVM.Visibility.hidden -- static
   LLVM.setInitializer ginit?slot (← LLVM.constFalse llvmctx)
   let ginit?v ← LLVM.buildLoad2 builder ginit?ty ginit?slot "init_v"
   buildIfThen_ builder "isGInitialized" ginit?v
@@ -1300,7 +1345,7 @@ def callLeanSetPanicMessages (builder : LLVM.Builder llvmctx)
   let argtys := #[ ← LLVM.i1Type llvmctx ]
   let fn ← getOrCreateFunctionPrototype (← getLLVMModule) retty fnName argtys
   let fnty ← LLVM.functionType retty argtys
-  let _ ← LLVM.buildCall2 builder fnty fn #[enable?] 
+  let _ ← LLVM.buildCall2 builder fnty fn #[enable?]
 
 def callLeanIOMarkEndInitialization (builder : LLVM.Builder llvmctx) : M llvmctx Unit := do
   let fnName :=  "lean_io_mark_end_initialization"
@@ -1353,7 +1398,7 @@ def callLeanIOResultShowError (builder : LLVM.Builder llvmctx)
   let fnty ← LLVM.functionType retty argtys
   let _ ← LLVM.buildCall2 builder fnty fn #[v] name
 
-def callLeanMainFn (builder : LLVM.Builder llvmctx) 
+def callLeanMainFn (builder : LLVM.Builder llvmctx)
     (argv? : Option (LLVM.Value llvmctx))
     (world : LLVM.Value llvmctx)
     (name : String) : M llvmctx (LLVM.Value llvmctx) := do
@@ -1362,7 +1407,7 @@ def callLeanMainFn (builder : LLVM.Builder llvmctx)
   let argtys := if argv?.isSome then #[ voidptr, voidptr ] else #[ voidptr ]
   let fn ← getOrCreateFunctionPrototype (← getLLVMModule) retty leanMainFn argtys
   let fnty ← LLVM.functionType retty argtys
-  let args := match argv? with 
+  let args := match argv? with
               | .some argv => #[argv, world]
               | .none => #[world]
   LLVM.buildCall2 builder fnty fn args name
@@ -1505,6 +1550,20 @@ def optimizeLLVMModule (mod : LLVM.Module ctx) : IO Unit := do
   LLVM.disposePassManager pm
   LLVM.disposePassManagerBuilder pmb
 
+/-- Get the names of all global symbols in the module -/
+partial def getModuleGlobals (mod : LLVM.Module llvmctx) : IO (Array (LLVM.Value llvmctx)) := do
+  let rec go (v : LLVM.Value llvmctx) (acc : Array (LLVM.Value llvmctx)) : IO (Array (LLVM.Value llvmctx)) := do
+    if v.isNull then return acc
+    else go (← LLVM.getNextGlobal v) (acc.push v)
+  go (← LLVM.getFirstGlobal mod) #[]
+
+/-- Get the names of all global functions in the module -/
+partial def getModuleFunctions (mod : LLVM.Module llvmctx) : IO (Array (LLVM.Value llvmctx)) := do
+  let rec go (v : LLVM.Value llvmctx) (acc : Array (LLVM.Value llvmctx)) : IO (Array (LLVM.Value llvmctx)) := do
+    if v.isNull then return acc
+    else go (← LLVM.getNextFunction v) (acc.push v)
+  go (← LLVM.getFirstFunction mod) #[]
+
 /--
 `emitLLVM` is the entrypoint for the lean shell to code generate LLVM.
 -/
@@ -1520,7 +1579,29 @@ def emitLLVM (env : Environment) (modName : Name) (filepath : String) (tripleStr
   | .ok _ => do
          let membuf ← LLVM.createMemoryBufferWithContentsOfFile (← getLeanHBcPath).toString
          let modruntime ← LLVM.parseBitcode llvmctx membuf
+         /- It is important that we extract the names here because
+            pointers into modruntime get invalidated by linkModules -/
+         let runtimeGlobals ← (← getModuleGlobals modruntime).mapM (·.getName)
+         let filter func := do
+           -- | Do not insert internal linkage for
+           -- intrinsics such as `@llvm.umul.with.overflow.i64` which clang generates, and also
+           -- for declarations such as `lean_inc_ref_cold` which are externally defined.
+           if (← LLVM.isDeclaration func) then
+             return none
+           else
+             return some (← func.getName)
+         let runtimeFunctions ← (← getModuleFunctions modruntime).filterMapM filter
          LLVM.linkModules (dest := emitLLVMCtx.llvmmodule) (src := modruntime)
+         -- Mark every global and function as having internal linkage.
+         for name in runtimeGlobals do
+           let some global ← LLVM.getNamedGlobal emitLLVMCtx.llvmmodule name
+              | throw <| IO.Error.userError s!"ERROR: linked module must have global from runtime module: '{name}'"
+           LLVM.setLinkage global LLVM.Linkage.internal
+         for name in runtimeFunctions do
+           let some fn ← LLVM.getNamedFunction emitLLVMCtx.llvmmodule name
+              | throw <| IO.Error.userError s!"ERROR: linked module must have function from runtime module: '{name}'"
+           LLVM.setLinkage fn LLVM.Linkage.internal
+
          optimizeLLVMModule emitLLVMCtx.llvmmodule
          LLVM.writeBitcodeToFile emitLLVMCtx.llvmmodule filepath
          let tripleStr := tripleStr?.getD (← LLVM.getDefaultTargetTriple)

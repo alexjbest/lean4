@@ -304,7 +304,7 @@ syntax locationWildcard := " *"
 A hypothesis location specification consists of 1 or more hypothesis references
 and optionally `⊢` denoting the goal.
 -/
-syntax locationHyp := (ppSpace colGt term:max)+ ppSpace patternIgnore("⊢" <|> "|-")?
+syntax locationHyp := (ppSpace colGt term:max)+ ppSpace patternIgnore( atomic("|" noWs "-") <|> "⊢")?
 
 /--
 Location specifications are used by many tactics that can operate on either the
@@ -350,6 +350,15 @@ This provides a convenient way to unfold `e`.
 - `rewrite [e] at l` rewrites `e` at location(s) `l`, where `l` is either `*` or a
   list of hypotheses in the local context. In the latter case, a turnstile `⊢` or `|-`
   can also be used, to signify the target of the goal.
+
+Using `rw (config := {occs := .pos L}) [e]`,
+where `L : List Nat`, you can control which "occurrences" are rewritten.
+(This option applies to each rule, so usually this will only be used with a single rule.)
+Occurrences count from `1`.
+At the first occurrence, whether allowed or not,
+arguments of the rewrite rule `e` may be instantiated,
+restricting which later rewrites can be found.
+`{occs := .neg L}` allows skipping specified occurrences.
 -/
 syntax (name := rewriteSeq) "rewrite" (config)? rwRuleSeq (location)? : tactic
 

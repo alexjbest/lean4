@@ -1,4 +1,8 @@
-SHELL := /usr/bin/env bash -euo pipefail
+# LEAN_BASH: Makes the Bash shell used by the Lean build configurable.
+# On Windows, when CMake/Make is spawned directly (e.g., VSCode's CMake Tools),
+# it lacks a proper shell environment, so we need to manually point it to Bash.
+LEAN_BASH ?= /usr/bin/env bash
+SHELL := $(LEAN_BASH) -eo pipefail
 
 # any absolute path to the stdlib breaks the Makefile
 export LEAN_PATH=
@@ -18,6 +22,7 @@ LEANMAKE_OPTS=\
 	LEANC_OPTS+="${LEANC_OPTS}"\
 	LEAN_AR="${CMAKE_AR}"\
 	MORE_DEPS+="${PREV_STAGE}/bin/lean${CMAKE_EXECUTABLE_SUFFIX}"\
+	${EXTRA_LEANMAKE_OPTS}\
 	CMAKE_LIKE_OUTPUT=1
 
 ifeq "${STAGE}" "0"
@@ -39,16 +44,20 @@ Lean: Init
 # we specify the precise file names here to avoid rebuilds
 ${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/libleanshared${CMAKE_SHARED_LIBRARY_SUFFIX}: ${LIB}/lean/libInit.a ${LIB}/lean/libLean.a ${LIB}/lean/libleancpp.a ${CMAKE_BINARY_DIR}/runtime/libleanrt_initial-exec.a
 	@echo "[    ] Building $@"
+# on Windows, must remove file before writing a new one (since the old one may be in use)
+	@rm -f $@
 	"${CMAKE_BINARY_DIR}/leanc.sh" -shared -o $@ ${LEANSHARED_LINKER_FLAGS} ${LEANC_OPTS}
 
 leanshared: ${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/libleanshared${CMAKE_SHARED_LIBRARY_SUFFIX}
 
 Lake:
-# must put lake in its own directory because of submodule, so must adjust relative paths...
-	+"${LEAN_BIN}/leanmake" -C lake bin PKG=Lake BIN_NAME=lake${CMAKE_EXECUTABLE_SUFFIX} $(LEANMAKE_OPTS) LINK_OPTS='-lleanshared ${CMAKE_EXE_LINKER_FLAGS_MAKE_MAKE}' OUT="../${LIB}" LIB_OUT="../${LIB}/lean" OLEAN_OUT="../${LIB}/lean"
+# lake is in its own subdirectory, so must adjust relative paths...
+	+"${LEAN_BIN}/leanmake" -C lake bin lib PKG=Lake BIN_NAME=lake${CMAKE_EXECUTABLE_SUFFIX} $(LEANMAKE_OPTS) LINK_OPTS='-lleanshared ${CMAKE_EXE_LINKER_FLAGS_MAKE_MAKE}' OUT="../${LIB}" LIB_OUT="../${LIB}/lean" OLEAN_OUT="../${LIB}/lean"
 
 ${CMAKE_BINARY_DIR}/bin/lean${CMAKE_EXECUTABLE_SUFFIX}: ${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/libleanshared${CMAKE_SHARED_LIBRARY_SUFFIX} $(LEAN_SHELL)
 	@echo "[    ] Building $@"
+# on Windows, must remove file before writing a new one (since the old one may be in use)
+	@rm -f $@
 	"${CMAKE_BINARY_DIR}/leanc.sh" $(LEAN_SHELL) -lleanshared ${CMAKE_EXE_LINKER_FLAGS_MAKE} ${LEAN_EXE_LINKER_FLAGS} ${LEANC_OPTS} -o $@
 
 lean: ${CMAKE_BINARY_DIR}/bin/lean${CMAKE_EXECUTABLE_SUFFIX}

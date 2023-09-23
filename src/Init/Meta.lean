@@ -11,15 +11,15 @@ import Init.Data.Option.BasicAux
 
 namespace Lean
 
-@[extern c inline "lean_box(LEAN_VERSION_MAJOR)"]
+@[extern "lean_version_get_major"]
 private opaque version.getMajor (u : Unit) : Nat
 def version.major : Nat := version.getMajor ()
 
-@[extern c inline "lean_box(LEAN_VERSION_MINOR)"]
+@[extern "lean_version_get_minor"]
 private opaque version.getMinor (u : Unit) : Nat
 def version.minor : Nat := version.getMinor ()
 
-@[extern c inline "lean_box(LEAN_VERSION_PATCH)"]
+@[extern "lean_version_get_patch"]
 private opaque version.getPatch (u : Unit) : Nat
 def version.patch : Nat := version.getPatch ()
 
@@ -27,12 +27,12 @@ def version.patch : Nat := version.getPatch ()
 opaque getGithash (u : Unit) : String
 def githash : String := getGithash ()
 
-@[extern c inline "LEAN_VERSION_IS_RELEASE"]
+@[extern "lean_version_get_is_release"]
 opaque version.getIsRelease (u : Unit) : Bool
 def version.isRelease : Bool := version.getIsRelease ()
 
 /-- Additional version description like "nightly-2018-03-11" -/
-@[extern c inline "lean_mk_string(LEAN_SPECIAL_VERSION_DESC)"]
+@[extern "lean_version_get_special_desc"]
 opaque version.getSpecialDesc (u : Unit) : String
 def version.specialDesc : String := version.getSpecialDesc ()
 
@@ -61,7 +61,7 @@ def toolchain :=
   else
     ""
 
-@[extern c inline "LEAN_IS_STAGE0"]
+@[extern "lean_internal_is_stage0"]
 opaque Internal.isStage0 (u : Unit) : Bool
 
 /-- Valid identifier names -/
@@ -1227,6 +1227,9 @@ structure Config where
   proj              : Bool := true
   decide            : Bool := false
   autoUnfold        : Bool := false
+  /-- If `failIfUnchanged := true`, then calls to `simp`, `dsimp`, or `simp_all`
+  will fail if they do not make progress. -/
+  failIfUnchanged   : Bool := true
   deriving Inhabited, BEq, Repr
 
 end DSimp
@@ -1255,6 +1258,9 @@ structure Config where
     `simp` to visit them. If `dsimp := false`, then argument is not visited.
   -/
   dsimp             : Bool := true
+  /-- If `failIfUnchanged := true`, then calls to `simp`, `dsimp`, or `simp_all`
+  will fail if they do not make progress. -/
+  failIfUnchanged   : Bool := true
   deriving Inhabited, BEq, Repr
 
 -- Configuration object for `simp_all`
@@ -1274,11 +1280,27 @@ def neutralConfig : Simp.Config := {
 
 end Simp
 
+inductive Occurrences where
+  | all
+  | pos (idxs : List Nat)
+  | neg (idxs : List Nat)
+  deriving Inhabited, BEq
+
+def Occurrences.contains : Occurrences → Nat → Bool
+  | all,      _   => true
+  | pos idxs, idx => idxs.contains idx
+  | neg idxs, idx => !idxs.contains idx
+
+def Occurrences.isAll : Occurrences → Bool
+  | all => true
+  | _   => false
+
 namespace Rewrite
 
 structure Config where
   transparency : TransparencyMode := TransparencyMode.reducible
   offsetCnstrs : Bool := true
+  occs : Occurrences := Occurrences.all
 
 end Rewrite
 

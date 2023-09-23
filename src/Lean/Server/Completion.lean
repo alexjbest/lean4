@@ -69,7 +69,7 @@ private def sortCompletionItems (items : Array (CompletionItem × Float)) : Arra
 private def mkCompletionItem (label : Name) (type : Expr) (docString? : Option String) (kind : CompletionItemKind) : MetaM CompletionItem := do
   let doc? := docString?.map fun docString => { value := docString, kind := MarkupKind.markdown : MarkupContent }
   let detail ← consumeImplicitPrefix type fun type => return toString (← Meta.ppExpr type)
-  return { label := label.getString!, detail? := detail, documentation? := doc?, kind? := kind }
+  return { label := label.toString, detail? := detail, documentation? := doc?, kind? := kind }
 
 structure State where
   itemsMain  : Array (CompletionItem × Float) := #[]
@@ -127,14 +127,14 @@ private def matchAtomic (id : Name) (declName : Name) : Option Float :=
   | .str .anonymous s₁, .str .anonymous s₂ => fuzzyMatchScoreWithThreshold? s₁ s₂
   | _, _ => none
 
-private def normPrivateName (declName : Name) : MetaM Name := do
+private def normPrivateName? (declName : Name) : MetaM (Option Name) := do
   match privateToUserName? declName with
   | none => return declName
   | some userName =>
     if mkPrivateName (← getEnv) userName == declName then
       return userName
     else
-      return declName
+      return none
 
 /--
   Return the auto-completion label if `id` can be auto completed using `declName` assuming namespace `ns` is open.
@@ -144,27 +144,27 @@ private def normPrivateName (declName : Name) : MetaM Name := do
 -/
 private def matchDecl? (ns : Name) (id : Name) (danglingDot : Bool) (declName : Name) : MetaM (Option (Name × Float)) := do
   -- dbg_trace "{ns}, {id}, {declName}, {danglingDot}"
-  let declName ← normPrivateName declName
+  let some declName ← normPrivateName? declName
+    | return none
   if !ns.isPrefixOf declName then
     return none
-  else
-    let declName := declName.replacePrefix ns Name.anonymous
-    if id.isPrefixOf declName && danglingDot then
+  let declName := declName.replacePrefix ns Name.anonymous
+  if danglingDot then
+    -- If the input is `id.` and `declName` is of the form `id.atomic`, complete with `atomicName`
+    if id.isPrefixOf declName then
       let declName := declName.replacePrefix id Name.anonymous
       if declName.isAtomic && !declName.isAnonymous then
         return some (declName, 1)
-      else
-        return none
-    else if !danglingDot then
-      match id, declName with
-      | .str p₁ s₁, .str p₂ s₂ =>
-        if p₁ == p₂  then
-          return fuzzyMatchScoreWithThreshold? s₁ s₂ |>.map (s₂, ·)
-        else
-          return none
-      | _, _ => return none
-    else
-      return none
+  else if let (.str p₁ s₁, .str p₂ s₂) := (id, declName) then
+    if p₁ == p₂ then
+      -- If the namespaces agree, fuzzy-match on the trailing part
+      return fuzzyMatchScoreWithThreshold? s₁ s₂ |>.map (s₂, ·)
+    else if p₁.isAnonymous then
+      -- If `id` is namespace-less, also fuzzy-match declaration names in arbitrary namespaces
+      -- (but don't match the namespace itself).
+      -- Penalize score by component length of added namespace.
+      return fuzzyMatchScoreWithThreshold? s₁ s₂ |>.map (declName, · / (p₂.getNumParts + 1).toFloat)
+  return none
 
 /--
   Truncate the given identifier and make sure it has length `≤ newLength`.
@@ -253,8 +253,6 @@ private def idCompletionCore (ctx : ContextInfo) (id : Name) (hoverInfo : HoverI
           return true
         else
           return false
-      if (← matchUsingNamespace Name.anonymous) then
-        return ()
       -- use current namespace
       let rec visitNamespaces (ns : Name) : M Bool := do
         match ns with
@@ -270,6 +268,8 @@ private def idCompletionCore (ctx : ContextInfo) (id : Name) (hoverInfo : HoverI
             if (← matchUsingNamespace ns) then
               return ()
         | _ => pure ()
+      if (← matchUsingNamespace Name.anonymous) then
+        return ()
   -- Recall that aliases may not be atomic and include the namespace where they were created.
   let matchAlias (ns : Name) (alias : Name) : Option Float :=
     if ns.isPrefixOf alias then
@@ -280,14 +280,14 @@ private def idCompletionCore (ctx : ContextInfo) (id : Name) (hoverInfo : HoverI
   let addAlias (alias : Name) (declNames : List Name) (score : Float) : M Unit := do
     declNames.forM fun declName => do
       unless (← isBlackListed declName) do
-        addCompletionItemForDecl alias declName expectedType? score
-  -- search explicitily open `ids`
+        addCompletionItemForDecl alias.getString! declName expectedType? score
+  -- search explicitly open `ids`
   for openDecl in ctx.openDecls do
     match openDecl with
     | OpenDecl.explicit openedId resolvedId =>
       unless (← isBlackListed resolvedId) do
         if let some score := matchAtomic id openedId then
-          addCompletionItemForDecl openedId resolvedId expectedType? score
+          addCompletionItemForDecl openedId.getString! resolvedId expectedType? score
     | OpenDecl.simple ns _      =>
       getAliasState env |>.forM fun alias declNames => do
         if let some score := matchAlias ns alias then
@@ -366,7 +366,9 @@ private def dotCompletion (ctx : ContextInfo) (info : TermInfo) (hoverInfo : Hov
         failure
     else
       (← getEnv).constants.forM fun declName c => do
-        let typeName := (← normPrivateName declName).getPrefix
+        let some declName ← normPrivateName? declName
+          | return
+        let typeName := declName.getPrefix
         if nameSet.contains typeName then
           unless (← isBlackListed c.name) do
             if (← isDotCompletionMethod typeName c) then

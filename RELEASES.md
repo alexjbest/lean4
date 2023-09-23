@@ -1,5 +1,65 @@
-Unreleased
+# Lean 4 releases
+
+We intend to provide regular "minor version" releases of the Lean language at approximately monthly intervals.
+There is not yet a strong guarantee of backwards compatibility between versions,
+only an expectation that breaking changes will be documented in this file.
+
+This file contains work-in-progress notes for the upcoming release, as well as previous stable releases.
+Please check the [releases](https://github.com/leanprover/lean4/releases) page for the current status of each version.
+
+v4.2.0 (development in progress)
 ---------
+
+
+v4.1.0
+---------
+
+* After elaborating a configuration file, Lake will now cache the configuration to a `lakefile.olean`. Subsequent runs of Lake will import this OLean instead of elaborating the configuration file. This provides a significant performance improvement (benchmarks indicate that using the OLean cuts Lake's startup time in half), but there are some important details to keep in mind:
+  + Lake will regenerate this OLean after each modification to the `lakefile.lean` or `lean-toolchain`. You can also force a reconfigure by passing the new `--reconfigure` / `-R` option to `lake`.
+  + Lake configuration options (i.e., `-K`) will be fixed at the moment of elaboration. Setting these options when `lake` is using the cached configuration will have no effect. To change options, run `lake` with `-R` / `--reconfigure`.
+  + **The `lakefile.olean` is a local configuration and should not be committed to Git. Therefore, existing Lake packages need to add it to their `.gitignore`.**
+
+* The signature of `Lake.buildO` has changed, `args` has been split into `weakArgs` and `traceArgs`. `traceArgs` are included in the input trace and `weakArgs` are not. See Lake's [FFI example](src/lake/examples/ffi/lib/lakefile.lean) for a demonstration of how to adapt to this change.
+
+* The signatures of `Lean.importModules`, `Lean.Elab.headerToImports`, and `Lean.Elab.parseImports`
+  have [changed](https://github.com/leanprover/lean4/pull/2480) from taking `List Import` to `Array Import`.
+
+* There is now [an `occs` field](https://github.com/leanprover/lean4/pull/2470)
+  in the configuration object for the `rewrite` tactic,
+  allowing control of which occurrences of a pattern should be rewritten.
+  This was previously a separate argument for `Lean.MVarId.rewrite`,
+  and this has been removed in favour of an additional field of `Rewrite.Config`.
+  It was not previously accessible from user tactics.
+
+v4.0.0
+---------
+
+* [`Lean.Meta.getConst?` has been renamed](https://github.com/leanprover/lean4/pull/2454).
+  We have renamed `getConst?` to `getUnfoldableConst?` (and `getConstNoEx?` to `getUnfoldableConstNoEx?`).
+  These were not intended to be part of the public API, but downstream projects had been using them
+  (sometimes expecting different behaviour) incorrectly instead of `Lean.getConstInfo`.
+
+* [`dsimp` / `simp` / `simp_all` now fail by default if they make no progress](https://github.com/leanprover/lean4/pull/2336).
+
+  This can be overriden with the `(config := { failIfUnchanged := false })` option.
+  This change was made to ease manual use of `simp` (with complicated goals it can be hard to tell if it was effective)
+  and to allow easier flow control in tactics internally using `simp`.
+  See the [summary discussion](https://leanprover.zulipchat.com/#narrow/stream/270676-lean4/topic/simp.20fails.20if.20no.20progress/near/380153295)
+  on zulip for more details.
+
+* [`simp_all` now preserves order of hypotheses](https://github.com/leanprover/lean4/pull/2334).
+
+  In order to support the `failIfUnchanged` configuration option for `dsimp` / `simp` / `simp_all`
+  the way `simp_all` replaces hypotheses has changed.
+  In particular it is now more likely to preserve the order of hypotheses.
+  See [`simp_all` reorders hypotheses unnecessarily](https://github.com/leanprover/lean4/pull/2334).
+  (Previously all non-dependent propositional hypotheses were reverted and reintroduced.
+  Now only such hypotheses which were changed, or which come after a changed hypothesis,
+  are reverted and reintroduced.
+  This has the effect of preserving the ordering amongst the non-dependent propositional hypotheses,
+  but now any dependent or non-propositional hypotheses retain their position amongst the unchanged
+  non-dependent propositional hypotheses.)
+  This may affect proofs that use `rename_i`, `case ... =>`, or `next ... =>`.
 
 * [New `have this` implementation](https://github.com/leanprover/lean4/pull/2247).
 

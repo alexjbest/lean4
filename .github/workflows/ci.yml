@@ -39,8 +39,55 @@ jobs:
             fi
           fi
 
+  # This job determines if this CI build is for a tagged release.
+  # It only runs when a tag is pushed to the `leanprover` repository.
+  # It sets `set-release.outputs.RELEASE_TAG` to the tag, if the tag is "v" followed by a valid semver,
+  # and sets `set-release.outputs.{LEAN_VERSION_MAJOR,LEAN_VERSION_MINOR,LEAN_VERSION_PATCH,LEAN_SPECIAL_VERSION_DESC}`
+  # to the semver components parsed via regex.
+  set-release:
+    runs-on: ubuntu-latest
+    outputs:
+      LEAN_VERSION_MAJOR: ${{ steps.set.outputs.LEAN_VERSION_MAJOR }}
+      LEAN_VERSION_MINOR: ${{ steps.set.outputs.LEAN_VERSION_MINOR }}
+      LEAN_VERSION_PATCH: ${{ steps.set.outputs.LEAN_VERSION_PATCH }}
+      LEAN_SPECIAL_VERSION_DESC: ${{ steps.set.outputs.LEAN_SPECIAL_VERSION_DESC }}
+      RELEASE_TAG: ${{ steps.set.outputs.RELEASE_TAG }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+        if: startsWith(github.ref, 'refs/tags/') && github.repository == 'leanprover/lean4'
+      - name: Check for official release
+        if: startsWith(github.ref, 'refs/tags/') && github.repository == 'leanprover/lean4'
+        id: set
+        run: |
+          TAG_NAME=${GITHUB_REF##*/}
+
+          # From https://github.com/fsaintjacques/semver-tool/blob/master/src/semver
+
+          NAT='0|[1-9][0-9]*'
+          ALPHANUM='[0-9]*[A-Za-z-][0-9A-Za-z-]*'
+          IDENT="$NAT|$ALPHANUM"
+          FIELD='[0-9A-Za-z-]+'
+
+          SEMVER_REGEX="\
+          ^[vV]?\
+          ($NAT)\\.($NAT)\\.($NAT)\
+          (\\-(${IDENT})(\\.(${IDENT}))*)?\
+          (\\+${FIELD}(\\.${FIELD})*)?$"
+
+          if [[ ${TAG_NAME} =~ ${SEMVER_REGEX} ]]; then
+            echo "Tag ${TAG_NAME} matches SemVer regex, with groups ${BASH_REMATCH[1]} ${BASH_REMATCH[2]} ${BASH_REMATCH[3]} ${BASH_REMATCH[4]}"
+            echo "LEAN_VERSION_MAJOR=${BASH_REMATCH[1]}" >> $GITHUB_OUTPUT
+            echo "LEAN_VERSION_MINOR=${BASH_REMATCH[2]}" >> $GITHUB_OUTPUT
+            echo "LEAN_VERSION_PATCH=${BASH_REMATCH[3]}" >> $GITHUB_OUTPUT
+            echo "LEAN_SPECIAL_VERSION_DESC=${BASH_REMATCH[4]##-}" >> $GITHUB_OUTPUT
+            echo "RELEASE_TAG=$TAG_NAME" >> $GITHUB_OUTPUT
+          else
+            echo "Tag ${TAG_NAME} did not match SemVer regex."
+          fi
+
   build:
-    needs: set-nightly
+    needs: [set-nightly, set-release]
     if: github.event_name != 'schedule' || github.repository == 'leanprover/lean4'
     runs-on: ${{ matrix.os }}
     defaults:
@@ -50,6 +97,17 @@ jobs:
       matrix:
         include:
           # portable release build: use channel with older glibc (2.27)
+          - name: Linux LLVM
+            os: ubuntu-latest
+            release: false
+            shell: nix-shell --arg pkgsDist "import (fetchTarball \"channel:nixos-19.03\") {{}}" --run "bash -euxo pipefail {0}"
+            llvm-url: https://github.com/leanprover/lean-llvm/releases/download/15.0.1/lean-llvm-x86_64-linux-gnu.tar.zst
+            prepare-llvm: ../script/prepare-llvm-linux.sh lean-llvm*
+            binary-check: ldd -v
+            # foreign code may be linked against more recent glibc
+            # reverse-ffi needs to be updated to link to LLVM libraries
+            CTEST_OPTIONS: -E 'foreign|leanlaketest_reverse-ffi'
+            CMAKE_OPTIONS: -DLLVM=ON -DLLVM_CONFIG=${GITHUB_WORKSPACE}/build/llvm-host/bin/llvm-config
           - name: Linux release
             os: ubuntu-latest
             release: true
@@ -58,7 +116,7 @@ jobs:
             prepare-llvm: ../script/prepare-llvm-linux.sh lean-llvm*
             binary-check: ldd -v
             # foreign code may be linked against more recent glibc
-            CTEST_OPTIONS: -E 'foreign|leanlaketest_git'
+            CTEST_OPTIONS: -E 'foreign'
           - name: Linux
             os: ubuntu-latest
             check-stage3: true
@@ -67,18 +125,17 @@ jobs:
             os: ubuntu-latest
             CMAKE_OPTIONS: -DCMAKE_BUILD_TYPE=Debug
             # exclude seriously slow tests
-            CTEST_OPTIONS: -E 'interactivetest|leanpkgtest|laketest'
+            CTEST_OPTIONS: -E 'interactivetest|leanpkgtest|laketest|benchtest'
           - name: Linux fsanitize
             os: ubuntu-latest
             # turn off custom allocator & symbolic functions to make LSAN do its magic
             CMAKE_OPTIONS: -DLEAN_EXTRA_CXX_FLAGS=-fsanitize=address,undefined -DLEANC_EXTRA_FLAGS='-fsanitize=address,undefined -fsanitize-link-c++-runtime' -DSMALL_ALLOCATOR=OFF -DBSYMBOLIC=OFF
             # exclude seriously slow/problematic tests (laketests crash)
-            CTEST_OPTIONS: -E 'interactivetest|leanpkgtest|laketest'
+            CTEST_OPTIONS: -E 'interactivetest|leanpkgtest|laketest|benchtest'
           - name: macOS
             os: macos-latest
             release: true
             shell: bash -euxo pipefail {0}
-            CMAKE_OPTIONS: -DCMAKE_OSX_DEPLOYMENT_TARGET=10.15
             llvm-url: https://github.com/leanprover/lean-llvm/releases/download/15.0.1/lean-llvm-x86_64-apple-darwin.tar.zst
             prepare-llvm: ../script/prepare-llvm-macos.sh lean-llvm*
             binary-check: otool -L
@@ -88,7 +145,7 @@ jobs:
             release: true
             cross: true
             shell: bash -euxo pipefail {0}
-            CMAKE_OPTIONS: -DCMAKE_OSX_DEPLOYMENT_TARGET=10.15 -DUSE_GMP=OFF -DLEAN_INSTALL_SUFFIX=-darwin_aarch64
+            CMAKE_OPTIONS: -DUSE_GMP=OFF -DLEAN_INSTALL_SUFFIX=-darwin_aarch64
             llvm-url: https://github.com/leanprover/lean-llvm/releases/download/15.0.1/lean-llvm-aarch64-apple-darwin.tar.zst https://github.com/leanprover/lean-llvm/releases/download/15.0.1/lean-llvm-x86_64-apple-darwin.tar.zst
             prepare-llvm: EXTRA_FLAGS=--target=aarch64-apple-darwin ../script/prepare-llvm-macos.sh lean-llvm-aarch64-* lean-llvm-x86_64-*
             binary-check: otool -L
@@ -105,7 +162,7 @@ jobs:
             binary-check: ldd
           - name: Linux aarch64
             os: ubuntu-latest
-            CMAKE_OPTIONS: -DCMAKE_PREFIX_PATH=$GMP -DLEAN_INSTALL_SUFFIX=-linux_aarch64
+            CMAKE_OPTIONS: -DUSE_GMP=OFF -DLEAN_INSTALL_SUFFIX=-linux_aarch64
             release: true
             cross: true
             shell: nix-shell --arg pkgsDist "import (fetchTarball \"channel:nixos-19.03\") {{ localSystem.config = \"aarch64-unknown-linux-gnu\"; }}" --run "bash -euxo pipefail {0}"
@@ -125,6 +182,7 @@ jobs:
       LSAN_OPTIONS: max_leaks=10
       # somehow MinGW clang64 (or cmake?) defaults to `g++` even though it doesn't exist
       CXX: c++
+      MACOSX_DEPLOYMENT_TARGET: 10.15
     steps:
       - name: Checkout
         uses: actions/checkout@v3
@@ -179,6 +237,13 @@ jobs:
           if [[ -n '${{ matrix.release }}' && -n '${{ needs.set-nightly.outputs.nightly }}' ]]; then
             OPTIONS+=(-DLEAN_SPECIAL_VERSION_DESC=${{ needs.set-nightly.outputs.nightly }})
           fi
+          if [[ -n '${{ matrix.release }}' && -n '${{ needs.set-release.outputs.RELEASE_TAG }}' ]]; then
+            OPTIONS+=(-DLEAN_VERSION_MAJOR=${{ needs.set-release.outputs.LEAN_VERSION_MAJOR }})
+            OPTIONS+=(-DLEAN_VERSION_MINOR=${{ needs.set-release.outputs.LEAN_VERSION_MINOR }})
+            OPTIONS+=(-DLEAN_VERSION_PATCH=${{ needs.set-release.outputs.LEAN_VERSION_PATCH }})
+            OPTIONS+=(-DLEAN_VERSION_IS_RELEASE=1)
+            OPTIONS+=(-DLEAN_SPECIAL_VERSION_DESC=${{ needs.set-release.outputs.LEAN_SPECIAL_VERSION_DESC }})
+          fi
           # contortion to support empty OPTIONS with old macOS bash
           cmake .. ${{ matrix.CMAKE_OPTIONS }} ${OPTIONS[@]+"${OPTIONS[@]}"} -DLEAN_INSTALL_PREFIX=$PWD/..
           make -j4
@@ -194,7 +259,7 @@ jobs:
           dir=$(echo lean-*)
           mkdir pack
           # high-compression tar.zst + zip for release, fast tar.zst otherwise
-          if [[ '${{ startsWith(github.ref, 'refs/tags/') && matrix.release }}' == true || -n '${{ needs.set-nightly.outputs.nightly }}' ]]; then
+          if [[ '${{ startsWith(github.ref, 'refs/tags/') && matrix.release }}' == true || -n '${{ needs.set-nightly.outputs.nightly }}' || -n '${{ needs.set-release.outputs.RELEASE_TAG }}' ]]; then
             ${{ matrix.tar || 'tar' }} cf - $dir | zstd -T0 --no-progress -19 -o pack/$dir.tar.zst
             zip -rq pack/$dir.zip $dir
           else
@@ -214,7 +279,7 @@ jobs:
           cd build/stage1
           ulimit -c unlimited # coredumps
           # exclude nonreproducible test
-          ctest -j4 --output-on-failure -E leanlaketest_git ${{ matrix.CTEST_OPTIONS }} < /dev/null
+          ctest -j4 --output-on-failure ${{ matrix.CTEST_OPTIONS }} < /dev/null
         if: ${{ !matrix.cross }}
       - name: Check Test Binary
         run: ${{ matrix.binary-check }} tests/compiler/534.lean.out
@@ -267,6 +332,10 @@ jobs:
             ./build/stage2/bin/lean
             ./build/stage2/lib/lean/libleanshared.so
 
+  # This job creates releases from tags
+  # (whether they are "unofficial" releases for experiments, or official releases when the tag is "v" followed by a semver string.)
+  # We do not attempt to automatically construct a changelog here:
+  # unofficial releases don't need them, and official release notes will be written by a human.
   release:
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
@@ -283,6 +352,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  # This job creates nightly releases during the cron job.
+  # It is responsible for creating the tag, and automatically generating a changelog.
   release-nightly:
     needs: [set-nightly, build]
     if: needs.set-nightly.outputs.nightly
@@ -303,7 +374,7 @@ jobs:
           git fetch nightly --tags
           git tag ${{ needs.set-nightly.outputs.nightly }}
           git push nightly ${{ needs.set-nightly.outputs.nightly }}
-          last_tag=$(git describe HEAD^ --abbrev=0 --tags)
+          last_tag=$(git log HEAD^ --simplify-by-decoration --pretty="format:%d" | grep -o "nightly-[-0-9]*" | head -n 1)
           echo -e "*Changes since ${last_tag}:*\n\n" > diff.md
           git show $last_tag:RELEASES.md > old.md
           #./script/diff_changelogs.py old.md doc/changes.md >> diff.md

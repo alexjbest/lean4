@@ -9,7 +9,7 @@ endif()
 include(ExternalProject)
 project(LEAN CXX C)
 set(LEAN_VERSION_MAJOR 4)
-set(LEAN_VERSION_MINOR 0)
+set(LEAN_VERSION_MINOR 2)
 set(LEAN_VERSION_PATCH 0)
 set(LEAN_VERSION_IS_RELEASE 0)  # This number is 1 in the release revision, and 0 otherwise.
 set(LEAN_SPECIAL_VERSION_DESC "" CACHE STRING "Additional version description like 'nightly-2018-03-11'")
@@ -143,7 +143,7 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib/lean")
 
 # OSX default thread stack size is very small. Moreover, in Debug mode, each new stack frame consumes a lot of extra memory.
 if ((${MULTI_THREAD} MATCHES "ON") AND (${CMAKE_SYSTEM_NAME} MATCHES "Darwin"))
-  set(LEAN_EXTRA_MAKE_OPTS -s40000 ${LEAN_EXTRA_MAKE_OPTS})
+  string(APPEND LEAN_EXTRA_MAKE_OPTS " -s40000")
 endif ()
 
 # We want explicit stack probes in huge Lean stack frames for robust stack overflow detection
@@ -293,7 +293,7 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
     find_package(ZLIB REQUIRED)
     message(STATUS "ZLIB_LIBRARY: ${ZLIB_LIBRARY}")
     cmake_path(GET ZLIB_LIBRARY PARENT_PATH ZLIB_LIBRARY_PARENT_PATH)
-    string(APPEND LEAN_EXTRA_LINKER_FLAGS " -L ${ZLIB_LIBRARY_PARENT_PATH}")
+    string(APPEND LEANSHARED_LINKER_FLAGS " -L ${ZLIB_LIBRARY_PARENT_PATH}")
   endif()
   string(APPEND LEANC_STATIC_LINKER_FLAGS " -lleancpp -lInit -lLean -lleanrt")
 elseif(${CMAKE_SYSTEM_NAME} MATCHES "Emscripten")
@@ -301,6 +301,7 @@ elseif(${CMAKE_SYSTEM_NAME} MATCHES "Emscripten")
 else()
   string(APPEND LEANC_STATIC_LINKER_FLAGS " -Wl,--start-group -lleancpp -lLean -Wl,--end-group -Wl,--start-group -lInit -lleanrt -Wl,--end-group")
 endif()
+string(APPEND LEANC_STATIC_LINKER_FLAGS " -lLake")
 
 set(LEAN_CXX_STDLIB "-lstdc++" CACHE STRING "C++ stdlib linker flags")
 
@@ -311,23 +312,26 @@ endif()
 string(APPEND LEANC_STATIC_LINKER_FLAGS " ${LEAN_CXX_STDLIB}")
 string(APPEND LEANSHARED_LINKER_FLAGS " ${LEAN_CXX_STDLIB}")
 
-if(LLVM)
+if (LLVM)
+  string(APPEND LEANSHARED_LINKER_FLAGS " -L${LLVM_CONFIG_LIBDIR} ${LLVM_CONFIG_LDFLAGS} ${LLVM_CONFIG_LIBS} ${LLVM_CONFIG_SYSTEM_LIBS}")
+  string(APPEND CMAKE_CXX_FLAGS " -I${LLVM_CONFIG_INCLUDEDIR}")
+endif()
+
+if(LLVM AND ${STAGE} GREATER 0)
     # Here, we perform a replacement of `llvm-host` with `llvm`. This is necessary for our cross-compile
-    #   builds in `script/prepare-llvm-*.sh`. 
+    #   builds in `script/prepare-llvm-*.sh`.
     # - Recall that the host's copy of LLVM binaries and libraries is at
     #   `llvm-host`, and the target's copy of LLVM binaries and libraries is at
     #   `llvm`.
-    # - In an ideal world, we would run the target's `llvm/bin/llvm-config` and get the corrct link options for the target 
+    # - In an ideal world, we would run the target's `llvm/bin/llvm-config` and get the corrct link options for the target
     #   (e.g. `-Lllvm/lib/libLLVM`.)
     # - However, the target's `llvm/bin/llvm-config` has a different target
     #   triple from the host, and thus cannot be run on the host.
     # - So, we run the host `llvm-host/bin/llvm-config` from which we pick up
     #   compiler options, and change the output of the host to point to the target.
-    # - In particular, `host/bin/llvm-config` produces flags like `-Lllvm-host/lib/libLLVM`, while 
+    # - In particular, `host/bin/llvm-config` produces flags like `-Lllvm-host/lib/libLLVM`, while
     #   we need the path to be `-Lllvm/lib/libLLVM`. Thus, we perform this replacement here.
-    string(APPEND LEANSHARED_LINKER_FLAGS " -L${LLVM_CONFIG_LIBDIR} ${LLVM_CONFIG_LDFLAGS} ${LLVM_CONFIG_LIBS} ${LLVM_CONFIG_SYSTEM_LIBS}")
     string(REPLACE "llvm-host" "llvm" LEANSHARED_LINKER_FLAGS ${LEANSHARED_LINKER_FLAGS})
-    string(APPEND CMAKE_CXX_FLAGS  " -I${LLVM_CONFIG_INCLUDEDIR}")
     string(REPLACE "llvm-host" "llvm" LEAN_EXTRA_CXX_FLAGS ${LEAN_EXTRA_CXX_FLAGS})
     message(VERBOSE "leanshared linker flags: '${LEANSHARED_LINKER_FLAGS}' | lean extra cxx flags '${LEAN_EXTR_CXX_FLAGS}'")
 endif()
@@ -445,9 +449,6 @@ string(APPEND LEANC_OPTS " ${CMAKE_CXX_FLAGS_${uppercase_CMAKE_BUILD_TYPE}}")
 if(CMAKE_OSX_SYSROOT AND NOT LEAN_STANDALONE)
   string(APPEND LEANC_OPTS " ${CMAKE_CXX_SYSROOT_FLAG}${CMAKE_OSX_SYSROOT}")
 endif()
-if(CMAKE_OSX_DEPLOYMENT_TARGET)
-  string(APPEND LEANC_OPTS " ${CMAKE_CXX_OSX_DEPLOYMENT_TARGET_FLAG}${CMAKE_OSX_DEPLOYMENT_TARGET}")
-endif()
 
 if(${STAGE} GREATER 1)
   # reuse C++ parts, which don't change
@@ -507,6 +508,12 @@ else()
   endif()
 endif()
 
+# Build the compiler using the bootstraped C sources for stage0, and use
+# the LLVM build for stage1 and further.
+if (LLVM AND ${STAGE} GREATER 0)
+  set(EXTRA_LEANMAKE_OPTS "LLVM=1")
+endif()
+
 # Escape for `make`. Yes, twice.
 string(REPLACE "$" "$$" CMAKE_EXE_LINKER_FLAGS_MAKE "${CMAKE_EXE_LINKER_FLAGS}")
 string(REPLACE "$" "$$" CMAKE_EXE_LINKER_FLAGS_MAKE_MAKE "${CMAKE_EXE_LINKER_FLAGS_MAKE}")
@@ -518,6 +525,12 @@ add_custom_target(make_stdlib ALL
   # We use `lean` from the previous stage, but `leanc`, headers, etc. from the current stage
   COMMAND $(MAKE) -f ${CMAKE_BINARY_DIR}/stdlib.make Init Lean
   VERBATIM)
+
+# if we have LLVM enabled, then build `lean.h.bc` which has the LLVM bitcode
+# of Lean runtime to be built.
+if (LLVM AND ${STAGE} EQUAL 1)
+   add_dependencies(make_stdlib runtime_bc)
+endif()
 
 # We declare these as separate custom targets so they use separate `make` invocations, which makes `make` recompute which dependencies
 # (e.g. `libLean.a`) are now newer than the target file

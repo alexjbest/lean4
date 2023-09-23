@@ -286,13 +286,13 @@ macro:1 x:conv tk:" <;> " y:conv:0 : conv =>
 /-- `repeat convs` runs the sequence `convs` repeatedly until it fails to apply. -/
 syntax "repeat " convSeq : conv
 macro_rules
-  | `(conv| repeat $seq) => `(conv| first | ($seq); repeat $seq | rfl)
+  | `(conv| repeat $seq) => `(conv| first | ($seq); repeat $seq | skip)
 
 /--
 `conv => ...` allows the user to perform targeted rewriting on a goal or hypothesis,
 by focusing on particular subexpressions.
 
-See <https://leanprover.github.io/theorem_proving_in_lean4/conv.html> for more details.
+See <https://lean-lang.org/theorem_proving_in_lean4/conv.html> for more details.
 
 Basic forms:
 * `conv => cs` will rewrite the goal with conv tactics `cs`.
