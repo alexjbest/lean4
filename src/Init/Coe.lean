@@ -314,6 +314,8 @@ Helper definition used by the elaborator. It is not meant to be used directly by
 
 This is used for coercions between monads, in the case where we want to apply
 a monad lift and a coercion on the result type at the same time.
+
+Reducible so that it is unfolded later.
 -/
 @[inline, reducible, coe_decl] def Lean.Internal.liftCoeM {m : Type u → Type v} {n : Type u → Type w} {α β : Type u}
     [MonadLiftT m n] [∀ a, CoeT α a β] [Monad n] (x : m α) : n β := do
