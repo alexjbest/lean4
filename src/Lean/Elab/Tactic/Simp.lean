@@ -169,8 +169,12 @@ def elabSimpArgs (stx : Syntax) (ctx : Simp.Context) (eraseLocal : Bool) (kind :
 
           match (← resolveSimpIdTheorem? term) with
           | .expr e  =>
-            let name ← mkFreshId
-            thms ← addDeclToUnfoldOrTheorem thms (.stx name arg) e post inv kind
+            let fvar ← Term.isLocalIdent? term
+            if let some fvar := fvar then
+              thms ← addDeclToUnfoldOrTheorem thms (.fvar fvar.fvarId!) e post inv kind
+            else
+              let name ← mkFreshId
+              thms ← addDeclToUnfoldOrTheorem thms (.stx name arg) e post inv kind
           | .ext ext =>
             thmsArray := thmsArray.push (← ext.getTheorems)
           | .none    =>
